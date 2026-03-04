@@ -10,7 +10,8 @@ load_dotenv()
 
 #CONFIGURATION
 
-GROQ_MODEL = "llama-3.1-8b-instant"
+# GROQ_MODEL = "llama-3.1-8b-instant" 
+GROQ_MODEL = "llama-3.3-70b-versatile"
 OLLAMA_MODEL = "qwen3:8b"
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
