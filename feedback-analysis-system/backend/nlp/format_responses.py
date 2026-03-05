@@ -61,9 +61,31 @@ def generate_formatted_responses(
         header = "Respondent, " + ", ".join(text_cols)
 
         # Each data line: "row_number, answer1, answer2, ..."
-        # We use the original DataFrame index so IDs are stable
+        # We use the original DataFrame index so IDs are stable.
+        #
+        # WHY WE SANITIZE: survey responses sometimes contain embedded newlines
+        # (\n or \r\n) — e.g. a participant pressed Enter mid-answer, or the
+        # export tool preserved line breaks from a text box.  When analyze_sentiment
+        # later calls .strip().split('\n') to recover individual rows, any embedded
+        # newline splits one respondent's row into two separate lines.  That phantom
+        # line gets sent to the LLM as if it were an extra respondent, inflating
+        # n_classified by one for every embedded newline in the entire dataset.
+        #
+        # We also replace commas in the cell text with semicolons because the
+        # row is comma-delimited; an unescaped comma inside a cell value would
+        # shift column alignment for every column that follows it.
+        def _sanitize(cell: str) -> str:
+            return (
+                str(cell)
+                .replace("\r\n", " ")   # Windows-style line endings → space
+                .replace("\r",   " ")   # old Mac-style line endings → space
+                .replace("\n",   " ")   # Unix line endings → space
+                .replace(",",    ";")   # commas inside a cell → semicolons
+                .strip()
+            )
+
         data_lines = "\n".join(
-            f"{idx + 1}, " + ", ".join(str(t) for t in text_row)
+            f"{idx + 1}, " + ", ".join(_sanitize(t) for t in text_row)
             for idx, text_row in zip(respondent_index, sample_responses)
         )
         formatted_responses = f"Cluster: {cluster_id}\n{'=' * 30}\n{header}\n{data_lines}"

@@ -309,8 +309,23 @@ def analyze_sentiment(
         # List to hold our new segmented strings
         segments = []
         
-        # The actual data rows start at index 3
+        # The actual data rows start at index 3.
+        # GUARD: a valid data row must start with a respondent number — either
+        # a bare integer ("1", "42") or the R-prefixed zero-padded form ("R001").
+        # Any line that does NOT match this pattern is a phantom produced by an
+        # embedded newline inside a cell value that slipped through sanitization
+        # (e.g. pasted text with line breaks, Windows \r\n from an older export).
+        # Silently skipping it prevents that fragment from being sent to the LLM
+        # as a separate respondent and inflating n_classified.
+        import re
+        _valid_row = re.compile(r'^(R\d+|\d+)\s*,')
+
         for line in lines[3:]:
+            if not _valid_row.match(line.strip()):
+                # This line is a continuation fragment, not a new respondent row.
+                # Log it so the developer can see it, but do not create a segment.
+                print(f"  [sentiment] Skipping phantom line in cluster {cluster_id}: {repr(line[:80])}")
+                continue
             segments.append(f"{header}\n{line}")
             
         # Loop through each segmented line and call the LLM
