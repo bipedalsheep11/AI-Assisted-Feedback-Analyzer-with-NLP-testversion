@@ -11,35 +11,36 @@ import pdfplumber
 # ─────────────────────────────────────────────
 #  PDF EXTRACTION
 # ─────────────────────────────────────────────
-def extract_text_from_pdf(file) -> str:
-    """
-    Extract all text from a PDF file.
+# def extract_text_from_pdf(file) -> str:
+#     """
+#     Extract all text from a PDF file.
 
-    Parameters
-    ----------
-    file : str | Path | BytesIO
-        Either a file path (string or Path object) or a file-like object
-        (e.g., from Streamlit's st.file_uploader which returns BytesIO).
+#     Parameters
+#     ----------
+#     file : str | Path | BytesIO
+#         Either a file path (string or Path object) or a file-like object
+#         (e.g., from Streamlit's st.file_uploader which returns BytesIO).
 
-    Returns
-    -------
-    str
-        The full extracted text of the PDF, with pages separated by
-        a newline and a page marker.
-    """
-    # fitz.open() accepts both file paths and bytes/BytesIO objects
-    doc = fitz.open(stream=file.read(), filetype="pdf")
+#     Returns
+#     -------
+#     str
+#         The full extracted text of the PDF, with pages separated by
+#         a newline and a page marker.
+#     """
+#     # fitz.open() accepts both file paths and bytes/BytesIO objects
+#     file.seek(0)
+#     doc = fitz.open(stream=file.read(), filetype="pdf")
 
-    pages_text = []
-    for page_number, page in enumerate(doc, start=1):
-        # extract_text() returns the text on one page as a single string
-        # The "text" flag preserves reading order (left-to-right, top-to-bottom)
-        page_text = page.get_text("text")
-        if page_text.strip():  # Skip blank pages
-            pages_text.append(f"[Page {page_number}]\n{page_text}")
+#     pages_text = []
+#     for page_number, page in enumerate(doc, start=1):
+#         # extract_text() returns the text on one page as a single string
+#         # The "text" flag preserves reading order (left-to-right, top-to-bottom)
+#         page_text = page.get_text("text")
+#         if page_text.strip():  # Skip blank pages
+#             pages_text.append(f"[Page {page_number}]\n{page_text}")
 
-    doc.close()
-    return "\n\n".join(pages_text)
+#     doc.close()
+#     return "\n\n".join(pages_text)
 
 def extract_pages_from_pdf(file) -> list[dict]:
     """
@@ -50,6 +51,7 @@ def extract_pages_from_pdf(file) -> list[dict]:
     -------
     list of {"page": int, "text": str}
     """
+    file.seek(0)
     doc = fitz.open(stream=file.read(), filetype="pdf")
     pages = []
     for i, page in enumerate(doc, start=1):
@@ -59,91 +61,91 @@ def extract_pages_from_pdf(file) -> list[dict]:
     doc.close()
     return pages
 
-#-------Extracting Content from Docx-------------
-def extract_text_from_docx(file) -> str:
-    """
-    Extract all text from a Word .docx file.
+# #-------Extracting Content from Docx-------------
+# def extract_text_from_docx(file) -> str:
+#     """
+#     Extract all text from a Word .docx file.
 
-    Parameters
-    ----------
-    file : str | Path | BytesIO
-        File path or file-like object from Streamlit uploader.
+#     Parameters
+#     ----------
+#     file : str | Path | BytesIO
+#         File path or file-like object from Streamlit uploader.
 
-    Returns
-    -------
-    str
-        Full document text. Headings are preserved with a marker
-        so the LLM can understand document structure.
-    """
-    doc = Document(file)
+#     Returns
+#     -------
+#     str
+#         Full document text. Headings are preserved with a marker
+#         so the LLM can understand document structure.
+#     """
+#     doc = Document(file)
 
-    parts = []
-    for paragraph in doc.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue  # Skip empty paragraphs
+#     parts = []
+#     for paragraph in doc.paragraphs:
+#         text = paragraph.text.strip()
+#         if not text:
+#             continue  # Skip empty paragraphs
 
-        # Preserve heading structure — tells the LLM where sections begin
-        # paragraph.style.name is e.g. "Heading 1", "Heading 2", "Normal"
-        style = paragraph.style.name
-        if style.startswith("Heading"):
-            parts.append(f"\n## {text}")
-        else:
-            parts.append(text)
+#         # Preserve heading structure — tells the LLM where sections begin
+#         # paragraph.style.name is e.g. "Heading 1", "Heading 2", "Normal"
+#         style = paragraph.style.name
+#         if style.startswith("Heading"):
+#             parts.append(f"\n## {text}")
+#         else:
+#             parts.append(text)
 
-    return "\n".join(parts)
+#     return "\n".join(parts)
 
-def extract_tables_from_docx(file) -> list[pd.DataFrame]:
-    """
-    Extract all tables from a Word document as pandas DataFrames.
-    CSF evaluation forms often use tables — this preserves their structure.
+# def extract_tables_from_docx(file) -> list[pd.DataFrame]:
+#     """
+#     Extract all tables from a Word document as pandas DataFrames.
+#     CSF evaluation forms often use tables — this preserves their structure.
 
-    Returns
-    -------
-    list of pd.DataFrame, one per table found in the document.
-    """
-    doc = Document(file)
-    tables = []
+#     Returns
+#     -------
+#     list of pd.DataFrame, one per table found in the document.
+#     """
+#     doc = Document(file)
+#     tables = []
 
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            # Each cell's text, stripped of whitespace
-            row_data = [cell.text.strip() for cell in row.cells]
-            rows.append(row_data)
+#     for table in doc.tables:
+#         rows = []
+#         for row in table.rows:
+#             # Each cell's text, stripped of whitespace
+#             row_data = [cell.text.strip() for cell in row.cells]
+#             rows.append(row_data)
 
-        if rows:
-            # First row treated as column headers if it looks like a header
-            df = pd.DataFrame(rows[1:], columns=rows[0])
-            tables.append(df)
+#         if rows:
+#             # First row treated as column headers if it looks like a header
+#             df = pd.DataFrame(rows[1:], columns=rows[0])
+#             tables.append(df)
 
-    return tables
+#     return tables
     
-def extract_structured_responses_from_docx(file) -> pd.DataFrame:
-    """
-    Specialized extractor for evaluation forms where each row in a table
-    represents one respondent's answers.
+# def extract_structured_responses_from_docx(file) -> pd.DataFrame:
+#     """
+#     Specialized extractor for evaluation forms where each row in a table
+#     represents one respondent's answers.
 
-    Combines table extraction with text normalization to produce
-    a DataFrame ready for the sentiment/theme pipeline.
-    """
-    tables = extract_tables_from_docx(file)
+#     Combines table extraction with text normalization to produce
+#     a DataFrame ready for the sentiment/theme pipeline.
+#     """
+#     tables = extract_tables_from_docx(file)
 
-    if not tables:
-        # No tables found — treat the whole doc as one text response
-        text = extract_text_from_docx(file)
-        return pd.DataFrame([{"response_id": 1, "text_response": text}])
+#     if not tables:
+#         # No tables found — treat the whole doc as one text response
+#         text = extract_text_from_docx(file)
+#         return pd.DataFrame([{"response_id": 1, "text_response": text}])
 
-    # Use the largest table (most rows) as the evaluation data table
-    main_table = max(tables, key=len)
+#     # Use the largest table (most rows) as the evaluation data table
+#     main_table = max(tables, key=len)
 
-    # Standardize column names to lowercase and snake_case
-    main_table.columns = [
-        col.lower().replace(" ", "_").replace("-", "_")
-        for col in main_table.columns
-    ]
+#     # Standardize column names to lowercase and snake_case
+#     main_table.columns = [
+#         col.lower().replace(" ", "_").replace("-", "_")
+#         for col in main_table.columns
+#     ]
 
-    return main_table
+#     return main_table
 
 
 # ─────────────────────────────────────────────

@@ -18,7 +18,7 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 #Track which backend is being used
 current_backend = "groq"
 
-def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1000, temperature: float = 0.1) -> str:
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1000, temperature: float = 0.05) -> str:
     """
     This function is a unified call of the LLM with an automatic fallback:
     1. Try Groq (8b model)
@@ -67,7 +67,7 @@ def get_active_backend() -> str:
     #Returns the current active backend - useful for Streamlit status display.
     return current_backend
 
-def call_llm_with_retry(system_prompt, user_prompt, max_tokens = 1000, temperature = 0.1, retries = 3):
+def call_llm_with_retry(system_prompt, user_prompt, max_tokens = 1000, temperature = 0.05, retries = 3):
     #Full retry wrapper with backoff - to be used everywhere in the pipeline.
     for attempt in range(retries):
         try:
