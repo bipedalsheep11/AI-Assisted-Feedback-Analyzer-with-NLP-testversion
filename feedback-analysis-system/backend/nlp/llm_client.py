@@ -136,8 +136,8 @@ def get_active_backend() -> str:
 def call_llm_with_retry(
     system_prompt: str,
     user_prompt:   str,
-    max_tokens:    int   = 1500,
-    temperature:   float = 0.05,
+    max_tokens:    int   = 10000,
+    temperature:   float = 0.02,
     retries:       int   = 3,
 ) -> str:
     """

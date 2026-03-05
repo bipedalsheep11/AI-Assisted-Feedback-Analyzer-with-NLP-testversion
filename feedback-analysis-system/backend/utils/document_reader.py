@@ -11,35 +11,33 @@ import io
 
 
 def extract_text_from_pdf(file) -> str:
-    """
-    Extract all text from a PDF file object.
-
-    Parameters
-    ----------
-    file : file-like object or bytes — the PDF content
-
-    Returns
-    -------
-    str — extracted text with page markers
-    """
     try:
-        import fitz  # PyMuPDF
-        if hasattr(file, "read"):
-            file.seek(0)
-            doc = fitz.open(stream=file.read(), filetype="pdf")
-        else:
-            doc = fitz.open(stream=file, filetype="pdf")
-        pages = []
-        for i, page in enumerate(doc, start=1):
-            text = page.get_text("text").strip()
-            if text:
-                pages.append(f"[Page {i}]\n{text}")
-        doc.close()
-        return "\n\n".join(pages)
+        import fitz  # PyMuPDF — pip install pymupdf
     except ImportError:
-        return "[PyMuPDF not installed — install with: pip install pymupdf]"
-    except Exception as e:
-        return f"[PDF extraction error: {e}]"
+        raise ImportError(
+            "PyMuPDF is required to read PDF files.\n"
+            "Install it with:  pip install pymupdf"
+        )
+
+    # Ensure the file pointer is at the start.
+    # .seek(0) moves to byte 0 (the beginning) of the file-like object.
+    file.seek(0)
+
+    # fitz.open() with stream= and filetype= accepts a BytesIO object.
+    # It reads the raw bytes and parses the PDF structure.
+    doc = fitz.open(stream=file.read(), filetype="pdf")
+
+    pages_text = []
+    for page_number, page in enumerate(doc, start=1):
+        # .get_text("text") extracts the text in reading order (left → right, top → bottom).
+        page_text = page.get_text("text")
+        if page_text.strip():  # Skip blank or image-only pages.
+            pages_text.append(f"[Page {page_number}]\n{page_text}")
+
+    doc.close()
+
+    # "\n\n".join() puts a blank line between each page block.
+    return "\n\n".join(pages_text)
 
 
 def extract_text_from_docx(file) -> str:

@@ -1,0 +1,47 @@
+# .gitignore — files and folders that should never be committed to Git
+
+# ── Secrets and credentials ───────────────────────────────────────────────────
+.env
+*.pem
+*.key
+
+# ── Python cache and build artifacts ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Jupyter notebooks checkpoints ────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Data files (may contain PII — do not commit survey data) ─────────────────
+data/
+*.csv
+*.xlsx
+*.xls
+
+# ── OS artifacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE settings ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── Model cache (large binary files) ─────────────────────────────────────────
+# sentence-transformers downloads model weights here
+~/.cache/torch/
+~/.cache/huggingface/
+
+# ── Streamlit cache ───────────────────────────────────────────────────────────
+.streamlit/

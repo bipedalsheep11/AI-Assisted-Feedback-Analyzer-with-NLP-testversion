@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Feedback Analysis System — Python Dependencies
+#
+# Install everything at once:
+#   pip install -r requirements.txt
+#
+# If you are running on a system that enforces package isolation
+# (e.g. some Linux distros or managed Python environments), add the flag:
+#   pip install -r requirements.txt --break-system-packages
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+streamlit>=1.32.0
+
+# ── Data science core ─────────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+sentence-transformers>=2.6.0
+
+# ── Visualization ─────────────────────────────────────────────────────────────
+plotly>=5.18.0
+
+# ── LLM backends ─────────────────────────────────────────────────────────────
+# Groq: cloud-hosted LLM inference (fast, free-tier available)
+# Get your API key at: https://console.groq.com
+groq>=0.9.0
+
+# Ollama: local LLM inference (requires Ollama app running)
+# Download at: https://ollama.com
+ollama>=0.2.0
+
+# ── Environment config ────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── Document parsing ──────────────────────────────────────────────────────────
+# PyMuPDF: reads PDF files page by page
+pymupdf>=1.23.0
+
+# python-docx: reads Word .docx files
+python-docx>=1.1.0
+
+# openpyxl: required by pandas to read .xlsx files
+openpyxl>=3.1.0

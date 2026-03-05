@@ -1,24 +1,31 @@
 # app.py
-# ─────────────────────────────────────────────────────────────────
-# Feedback Analysis System — Streamlit Application
+# ─────────────────────────────────────────────────────────────────────────────
+# Feedback Analysis System — Main Streamlit Application
 #
-# Run with:   streamlit run app.py
-# ─────────────────────────────────────────────────────────────────
+# Run locally with:
+#   streamlit run app.py
+#
+# This file is the entry point for the web interface.
+# All heavy logic lives in backend/; this file handles layout, navigation,
+# user interaction, and rendering results.
+# ─────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import io
 import sys
 import os
 
-# ── Path setup so backend modules are importable ─────────────────
+# ── Path setup ─────────────────────────────────────────────────────────────
+# Insert the project root so that "backend.nlp.xxx" imports resolve correctly
+# when running from any working directory.
 sys.path.insert(0, os.path.dirname(__file__))
 
-from backend.nlp.auto_clustering    import run_clustering_pipeline
-from backend.nlp.format_responses   import get_all_clusters_table, generate_formatted_responses
-from backend.nlp.analysis_modules   import (
+# ── Backend imports ────────────────────────────────────────────────────────
+from backend.nlp.auto_clustering   import run_clustering_pipeline
+from backend.nlp.format_responses  import get_all_clusters_table
+from backend.nlp.analysis_modules  import (
     label_all_clusters,
     analyze_sentiment,
     cluster_themes,
@@ -26,9 +33,12 @@ from backend.nlp.analysis_modules   import (
 )
 from backend.utils.get_system_prompt import get_system_prompt
 from backend.utils.document_reader   import load_file
-from backend.nlp.llm_client          import get_active_backend
+from backend.nlp.llm_client          import get_active_backend, call_llm_with_retry
 
-# ── Page config ───────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG  (must be the first Streamlit call)
+# ═══════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="Feedback Analysis System",
     page_icon="◉",
@@ -36,19 +46,21 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS — light medium-contrast theme ─────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GLOBAL CSS
+# ═══════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,900;1,9..144,300;1,9..144,600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,900;1,9..144,300;1,9..144,600&display=swap');
 
 :root {
-  --bg:      #f4f5f8; --surface: #ffffff; --surface2: #eef0f5;
-  --border:  #d8dce8; --gold: #a06c00;    --teal: #1a8a82;
-  --coral:   #c94f38; --violet: #5044c0;  --mint: #1a8a5a;
-  --text-1:  #1a1d2e; --text-2: #4a5068;  --text-3: #8a8f9e;
+  --bg:      #f4f5f8;  --surface:  #ffffff;  --surface2: #eef0f5;
+  --border:  #d8dce8;  --gold:     #a06c00;  --teal:     #1a8a82;
+  --coral:   #c94f38;  --violet:   #5044c0;  --mint:     #1a8a5a;
+  --text-1:  #1a1d2e;  --text-2:   #4a5068;  --text-3:   #8a8f9e;
 }
 
-/* Global overrides */
 html, body, [class*="css"] {
   font-family: 'DM Mono', monospace !important;
   background-color: var(--bg) !important;
@@ -56,106 +68,89 @@ html, body, [class*="css"] {
 }
 .stApp { background-color: var(--bg); }
 
-/* Headers */
 h1, h2, h3 { font-family: 'Fraunces', serif !important; letter-spacing: -.3px; }
 h1 { color: var(--text-1); }
 h2 { color: var(--text-1); font-size: 1.5rem !important; }
 h3 { color: var(--text-2); font-size: 1.1rem !important; }
 
-/* Metric cards */
 [data-testid="metric-container"] {
   background: var(--surface); border: 1px solid var(--border);
-  padding: 16px; border-radius: 3px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  padding: 16px; border-radius: 3px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
 }
-[data-testid="metric-container"] label { color: var(--text-3) !important; font-size: 10px !important; text-transform: uppercase; letter-spacing: .12em; }
-[data-testid="metric-container"] [data-testid="stMetricValue"] { color: var(--gold) !important; font-family: 'Fraunces', serif !important; font-size: 2.2rem !important; }
+[data-testid="metric-container"] label {
+  color: var(--text-3) !important; font-size: 10px !important;
+  text-transform: uppercase; letter-spacing: .12em;
+}
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+  color: var(--gold) !important; font-family: 'Fraunces', serif !important; font-size: 2.2rem !important;
+}
 
-/* Sidebar */
 [data-testid="stSidebar"] { background: var(--surface) !important; border-right: 1px solid var(--border); }
 [data-testid="stSidebar"] * { color: var(--text-2) !important; }
 
-/* Buttons */
 .stButton > button {
-  background: var(--gold) !important; color: #ffffff !important;
+  background: var(--gold) !important; color: #fff !important;
   border: none !important; border-radius: 3px !important;
   font-family: 'DM Mono', monospace !important;
   font-size: 12px !important; font-weight: 500 !important;
   text-transform: uppercase !important; letter-spacing: .1em !important;
   padding: 10px 24px !important;
 }
-.stButton > button:hover { opacity: 0.88 !important; }
+.stButton > button:hover { opacity: .88 !important; }
 
-/* Inputs */
 .stTextInput > div > div > input,
-.stTextArea > div > div > textarea,
+.stTextArea  > div > div > textarea,
 .stSelectbox > div > div > div {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  color: var(--text-1) !important;
-  font-family: 'DM Mono', monospace !important;
-  font-size: 12px !important;
-  border-radius: 3px !important;
+  background: var(--surface) !important; border: 1px solid var(--border) !important;
+  color: var(--text-1) !important; font-family: 'DM Mono', monospace !important;
+  font-size: 12px !important; border-radius: 3px !important;
 }
 
-/* File uploader */
 [data-testid="stFileUploader"] {
   background: var(--surface) !important;
-  border: 1px dashed var(--border) !important;
-  border-radius: 3px !important;
+  border: 1px dashed var(--border) !important; border-radius: 3px !important;
 }
 
-/* Dataframe */
 .stDataFrame { border: 1px solid var(--border) !important; border-radius: 3px !important; }
 
-/* Expander */
 .streamlit-expanderHeader {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  color: var(--text-2) !important;
-  font-family: 'DM Mono', monospace !important;
-  font-size: 12px !important;
+  background: var(--surface) !important; border: 1px solid var(--border) !important;
+  color: var(--text-2) !important; font-family: 'DM Mono', monospace !important; font-size: 12px !important;
 }
 .streamlit-expanderContent {
-  background: var(--surface2) !important;
-  border: 1px solid var(--border) !important;
+  background: var(--surface2) !important; border: 1px solid var(--border) !important;
 }
 
-/* Status / info boxes */
 .stAlert { border-radius: 3px !important; font-size: 12px !important; }
-.stSuccess { background: rgba(26,138,130,.08) !important; border-color: var(--teal) !important; color: var(--teal) !important; }
-.stWarning { background: rgba(160,108,0,.08) !important; border-color: var(--gold) !important; color: var(--gold) !important; }
-.stError   { background: rgba(201,79,56,.08) !important; border-color: var(--coral) !important; color: var(--coral) !important; }
-.stInfo    { background: rgba(80,68,192,.06) !important; border-color: var(--violet) !important; color: var(--violet) !important; }
-
-/* Progress bar */
 .stProgress > div > div > div > div { background: var(--gold) !important; }
 
-/* Tabs */
 .stTabs [data-baseweb="tab-list"] { background: var(--surface) !important; border-bottom: 1px solid var(--border) !important; }
-.stTabs [data-baseweb="tab"] { color: var(--text-3) !important; font-family: 'DM Mono', monospace !important; font-size: 11px !important; }
-.stTabs [aria-selected="true"] { color: var(--gold) !important; border-bottom-color: var(--gold) !important; }
+.stTabs [data-baseweb="tab"]      { color: var(--text-3) !important; font-family: 'DM Mono', monospace !important; font-size: 11px !important; }
+.stTabs [aria-selected="true"]    { color: var(--gold) !important; border-bottom-color: var(--gold) !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SESSION STATE INITIALISATION
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# SESSION STATE
+# Streamlit re-runs the whole script on every user interaction.
+# st.session_state persists values across those re-runs.
+# ═══════════════════════════════════════════════════════════════════════════
 def init_state():
     defaults = {
-        "pipeline_done":     False,
-        "labeled_df":        None,
-        "best_k":            None,
-        "likert_cols":       [],
-        "text_cols":         [],
-        "cluster_labels":    {},
-        "sentiment_data":    {},
-        "theme_data":        {},
-        "action_data":       {},
-        "pca_coords":        None,
-        "program_name":      "",
-        "document_text":     "",
+        "pipeline_done":  False,
+        "labeled_df":     None,
+        "best_k":         None,
+        "likert_cols":    [],
+        "text_cols":      [],
+        "cluster_labels": {},
+        "sentiment_data": {},
+        "theme_data":     {},
+        "action_data":    {},
+        "pca_coords":     None,
+        "program_name":   "",
+        "document_text":  "",
+        "chat_history":   [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -164,39 +159,24 @@ def init_state():
 init_state()
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # COLOUR HELPERS
-# ═══════════════════════════════════════════════════════════════════
-CLUSTER_COLORS = ["#a06c00", "#1a8a82", "#c94f38", "#5044c0", "#1a7a50"]
+# ═══════════════════════════════════════════════════════════════════════════
+CLUSTER_COLORS = ["#a06c00", "#1a8a82", "#c94f38", "#5044c0", "#1a7a50", "#7a3050"]
 
 def cluster_color(i: int) -> str:
     return CLUSTER_COLORS[i % len(CLUSTER_COLORS)]
 
-def sentiment_color(s: str) -> str:
-    return {"positive": "#1a8a82", "negative": "#c94f38", "neutral": "#8a8f9e", "mixed": "#5044c0"}.get(s, "#8a8f9e")
-
 def hex_to_rgba(hex_color: str, alpha: float = 1.0) -> str:
-    """
-    Convert a 6-digit hex color to an rgba() string that Plotly accepts.
-    Plotly does NOT support 8-digit hex (#rrggbbaa) — use this helper instead.
-
-    Parameters
-    ----------
-    hex_color : str   — 6-digit hex like '#1a8a82'
-    alpha     : float — opacity 0.0 (transparent) to 1.0 (opaque)
-
-    Returns
-    -------
-    str — e.g. 'rgba(26,138,130,0.8)'
-    """
+    """Convert 6-digit hex to rgba() string for Plotly compatibility."""
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # SIDEBAR
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## ◉ Feedback Analysis")
     st.markdown("---")
@@ -211,69 +191,99 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Pipeline Status**")
     if st.session_state.pipeline_done:
-        st.success(f"✓ {st.session_state.best_k} clusters · {len(st.session_state.labeled_df)} respondents")
-        urgent = sum(1 for r in (st.session_state.sentiment_data.get("results") or []) if r.get("flag_urgent"))
-        if urgent:
-            st.warning(f"⚠ {urgent} urgent flags")
+        st.success(
+            f"✓ {st.session_state.best_k} clusters · "
+            f"{len(st.session_state.labeled_df)} respondents"
+        )
+        urgent_count = sum(
+            1 for r in (st.session_state.sentiment_data.get("results") or [])
+            if r.get("flag_urgent")
+        )
+        if urgent_count:
+            st.warning(f"⚠ {urgent_count} urgent flags")
     else:
         st.info("No analysis loaded")
 
     st.markdown("---")
-    st.caption(f"Backend: {get_active_backend() or 'none'}")
+    backend_name = get_active_backend() or "none"
+    st.caption(f"Backend: {backend_name}")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: UPLOAD & CONFIG
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 if page == "Upload & Config":
     st.title("Configure Your Analysis")
-    st.markdown("Upload your survey CSV and configure how the AI should cluster and analyse responses.")
+    st.markdown("Upload your survey CSV and optional context document, then configure clustering settings.")
 
     col1, col2 = st.columns(2)
     with col1:
-        csv_file = st.file_uploader("Survey CSV", type=["csv"], help="Likert rating columns + free-text response columns")
+        csv_file = st.file_uploader(
+            "Survey CSV",
+            type=["csv"],
+            help="Must contain Likert rating columns (numeric) and/or free-text response columns.",
+        )
     with col2:
-        doc_file = st.file_uploader("Program Context (optional)", type=["pdf","docx","txt"], help="Program brief to ground the AI's analysis")
+        doc_file = st.file_uploader(
+            "Program Context — optional",
+            type=["pdf", "docx", "txt"],
+            help="Upload a program brief to ground the AI's analysis in real context.",
+        )
 
     st.markdown("---")
     col3, col4 = st.columns(2)
+
     with col3:
         st.markdown("#### Clustering Settings")
-        auto_cluster = st.toggle("Auto-discover clusters (recommended)", value=True)
+        auto_cluster_toggle = st.toggle("Auto-discover clusters (recommended)", value=True)
         k_val = None
-        if not auto_cluster:
+        if not auto_cluster_toggle:
             k_val = st.number_input("Number of clusters (k)", min_value=2, max_value=10, value=4)
+
         themes_raw = st.text_area(
             "Predefined themes — one per line (leave blank for auto-discovery)",
-            placeholder="Facilitator Effectiveness\nModule Pacing\nContent Relevance\nFollow-up Support",
+            placeholder=(
+                "Facilitator Effectiveness\n"
+                "Module Pacing\n"
+                "Content Relevance\n"
+                "Follow-up Support"
+            ),
             height=120,
         )
 
     with col4:
         st.markdown("#### Analysis Scope")
-        program_name = st.text_input("Programme / evaluation name", placeholder="e.g. Leadership Development Series — Q4 2024")
+        program_name = st.text_input(
+            "Programme / evaluation name",
+            placeholder="e.g. Leadership Development Series — Q4 2024",
+        )
         flag_urgent  = st.toggle("Flag urgent negative responses", value=True)
         gen_insights = st.toggle("Extract actionable insights",    value=True)
 
     st.markdown("---")
 
-    if st.button("⚡ Run Analysis Pipeline", disabled=(csv_file is None), use_container_width=True):
-        # ── Store config ─────────────────────────────────────────
+    if st.button(
+        "⚡ Run Analysis Pipeline",
+        disabled=(csv_file is None),
+        use_container_width=True,
+    ):
         st.session_state.program_name = program_name
 
-        # ── Load CSV ──────────────────────────────────────────────
+        # ── Load CSV ────────────────────────────────────────────────────────
         try:
             csv_result = load_file(csv_file, csv_file.name)
             df_raw     = csv_result["dataframe"]
-            # Drop first column if it looks like an auto-index
-            if df_raw.columns[0].lower() in ("", "unnamed: 0", "index"):
+
+            # Drop the first column if it appears to be an auto-generated index.
+            if df_raw.columns[0].lower().strip() in ("", "unnamed: 0", "index"):
                 df_raw = df_raw.iloc[:, 1:]
+
             st.success(f"✓ Loaded {len(df_raw)} rows × {len(df_raw.columns)} columns")
         except Exception as e:
             st.error(f"Failed to load CSV: {e}")
             st.stop()
 
-        # ── Load context document ─────────────────────────────────
+        # ── Load context document ────────────────────────────────────────────
         doc_text = ""
         if doc_file:
             try:
@@ -286,12 +296,12 @@ if page == "Upload & Config":
         st.session_state.document_text = doc_text
         system_prompt = get_system_prompt(doc_text, program_name)
 
-        # ── STAGE 1-2: Clustering ─────────────────────────────────
-        with st.spinner("Stage 1–2: Embedding & clustering responses…"):
+        # ── Stage 1–2: Clustering ────────────────────────────────────────────
+        with st.spinner("Stage 1–2: Embedding and clustering responses…"):
             try:
                 pipeline_out = run_clustering_pipeline(
                     dataframe  = df_raw,
-                    force_k    = None if auto_cluster else k_val,
+                    force_k    = None if auto_cluster_toggle else k_val,
                     n_pca_dims = 30,
                 )
                 st.session_state.labeled_df  = pipeline_out["labeled_df"]
@@ -299,12 +309,12 @@ if page == "Upload & Config":
                 st.session_state.likert_cols = pipeline_out["likert_cols"]
                 st.session_state.text_cols   = pipeline_out["text_cols"]
                 st.session_state.pca_coords  = pipeline_out["pca_coords"]
-                st.success(f"✓ Clustering complete — {pipeline_out['best_k']} clusters")
+                st.success(f"✓ Clustering complete — {pipeline_out['best_k']} clusters found")
             except Exception as e:
                 st.error(f"Clustering failed: {e}")
                 st.stop()
 
-        # Build shared context tables
+        # Build the shared formatted text tables used by all LLM stages.
         all_clusters_table = get_all_clusters_table(
             st.session_state.labeled_df,
             st.session_state.best_k,
@@ -312,7 +322,7 @@ if page == "Upload & Config":
             st.session_state.text_cols,
         )
 
-        # ── STAGE 3: Cluster Labelling ────────────────────────────
+        # ── Stage 3: Cluster labelling ───────────────────────────────────────
         with st.spinner("Stage 3: Labelling clusters with AI…"):
             try:
                 labels = label_all_clusters(
@@ -329,43 +339,31 @@ if page == "Upload & Config":
                 st.warning(f"Cluster labelling failed: {e}")
                 st.session_state.cluster_labels = {}
 
-        # ── STAGE 4: Sentiment ────────────────────────────────────
+        # ── Stage 4: Sentiment analysis ──────────────────────────────────────
         with st.spinner("Stage 4: Analysing sentiment…"):
             try:
-                # sent = analyze_sentiment(all_clusters_table, system_prompt)
-                sent = analyze_sentiment(
-                    labeled_df = st.session_state.labeled_df,
-                    best_k = st.session_state.best_k,
-                    likert_cols = st.session_state.likert_cols, 
-                    text_cols = st.session_state.text_cols, 
-                    system_prompt = system_prompt)
+                sent = analyze_sentiment(all_clusters_table, system_prompt)
                 st.session_state.sentiment_data = sent
-
-                # Use len(results) directly — total_classified is now
-                # computed inside analyze_sentiment, but this is a safe
-                # second guarantee in case the function is swapped out.
                 n_classified = len(sent.get("results") or [])
                 n_urgent     = sum(1 for r in (sent.get("results") or []) if r.get("flag_urgent"))
-                st.success(f"✓ {n_classified} responses classified · {n_urgent} urgent.")
+                st.success(f"✓ {n_classified} responses classified · {n_urgent} urgent")
             except Exception as e:
                 st.error(f"Sentiment analysis failed: {type(e).__name__}: {e}")
                 st.session_state.sentiment_data = {}
-                with st.expander("Debug — sentiment error detail"):
-                    import traceback
-                    st.code(traceback.format_exc())
 
-        # ── STAGE 5: Themes ───────────────────────────────────────
+        # ── Stage 5: Theme clustering ────────────────────────────────────────
         with st.spinner("Stage 5: Clustering themes…"):
             try:
                 predefined = [t.strip() for t in themes_raw.split("\n") if t.strip()]
                 themes = cluster_themes(all_clusters_table, system_prompt, predefined or None)
                 st.session_state.theme_data = themes
-                st.success(f"✓ {len(themes.get('themes', []))} themes identified")
+                n_themes = len(themes.get("themes", []))
+                st.success(f"✓ {n_themes} themes identified")
             except Exception as e:
                 st.warning(f"Theme clustering failed: {e}")
                 st.session_state.theme_data = {}
 
-        # ── STAGE 6: Insights ─────────────────────────────────────
+        # ── Stage 6: Actionable insights ────────────────────────────────────
         if gen_insights:
             with st.spinner("Stage 6: Extracting actionable insights…"):
                 try:
@@ -377,29 +375,35 @@ if page == "Upload & Config":
                     st.session_state.action_data = {}
 
         st.session_state.pipeline_done = True
+        st.session_state.chat_history  = []  # Reset chat history for new analysis.
         st.balloons()
         st.success("✓ Analysis complete! Navigate to Cluster Profiles or Dashboard.")
 
 
-# ═══════════════════════════════════════════════════════════════════
-# PAGE: RUN PIPELINE (status view)
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE: RUN PIPELINE (status summary)
+# ═══════════════════════════════════════════════════════════════════════════
 elif page == "Run Pipeline":
     st.title("Pipeline Status")
+
     if st.session_state.pipeline_done:
-        st.success("Pipeline complete. Navigate to Cluster Profiles or Dashboard.")
+        st.success("Pipeline complete.")
         r = st.session_state
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Clusters", r.best_k)
-        col2.metric("Respondents", len(r.labeled_df))
-        col3.metric("Themes", len((r.theme_data or {}).get("themes", [])))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Clusters",    r.best_k)
+        c2.metric("Respondents", len(r.labeled_df))
+        c3.metric("Themes",      len((r.theme_data or {}).get("themes", [])))
+        c4.metric(
+            "Insights",
+            len((r.action_data or {}).get("insights", [])),
+        )
     else:
         st.info("Run the pipeline from the Upload & Config page.")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: CLUSTER PROFILES
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 elif page == "Cluster Profiles":
     st.title("Cluster Profiles")
 
@@ -410,27 +414,33 @@ elif page == "Cluster Profiles":
     df        = st.session_state.labeled_df
     k         = st.session_state.best_k
     labels    = st.session_state.cluster_labels
-    sent_data = st.session_state.sentiment_data
-    sent_summ = (sent_data or {}).get("cluster_summary", {})
+    sent_data = st.session_state.sentiment_data or {}
+    sent_summ = sent_data.get("cluster_summary", {})
 
     # Export button
     col_hdr, col_btn = st.columns([3, 1])
     with col_btn:
         if st.button("↓ Export Labels JSON"):
             json_bytes = json.dumps(labels, indent=2).encode()
-            st.download_button("Download cluster_labels.json", json_bytes, "cluster_labels.json", "application/json")
+            st.download_button(
+                "Download cluster_labels.json",
+                json_bytes,
+                "cluster_labels.json",
+                "application/json",
+            )
 
     for ci in range(k):
         cl  = labels.get(str(ci), labels.get(ci, {}))
         col = cluster_color(ci)
         sc  = sent_summ.get(str(ci), sent_summ.get(ci, {}))
 
-        # Colour-coded expander per cluster
-        with st.expander(f"{'●'} Cluster {ci} — {cl.get('label', f'Cluster {ci}')}", expanded=(ci == 0)):
+        with st.expander(
+            f"● Cluster {ci} — {cl.get('label', f'Cluster {ci}')}",
+            expanded=(ci == 0),
+        ):
             left, right = st.columns([3, 2])
 
             with left:
-                # Label + n
                 cluster_rows = df[df["cluster"] == ci]
                 st.markdown(
                     f"<div style='font-family:Fraunces,serif;font-size:22px;font-weight:900;"
@@ -441,7 +451,6 @@ elif page == "Cluster Profiles":
                 )
                 st.markdown("---")
 
-                # Respondent profile
                 st.markdown("**Respondent Profile**")
                 st.markdown(
                     f"<div style='font-family:Fraunces,serif;font-style:italic;font-size:13px;"
@@ -451,9 +460,8 @@ elif page == "Cluster Profiles":
                 )
                 st.markdown("")
 
-                # Key drivers
                 st.markdown("**Key Drivers**")
-                drivers = cl.get("key_drivers", [])
+                drivers     = cl.get("key_drivers", [])
                 driver_html = " ".join(
                     f"<span style='display:inline-block;background:#eef0f5;border:1px solid #d8dce8;"
                     f"padding:4px 10px;border-radius:20px;font-size:10px;color:#4a5068;margin:2px'>"
@@ -464,7 +472,6 @@ elif page == "Cluster Profiles":
                 st.markdown(driver_html or "—", unsafe_allow_html=True)
                 st.markdown("")
 
-                # Distinguishing feature
                 st.markdown("**Distinguishing Feature**")
                 st.markdown(
                     f"<div style='font-size:11px;color:#4a5068;background:#eef0f5;padding:10px 14px;"
@@ -474,7 +481,6 @@ elif page == "Cluster Profiles":
                 )
 
             with right:
-                # Average ratings bars
                 if st.session_state.likert_cols:
                     st.markdown("**Average Ratings**")
                     avg = df[df["cluster"] == ci][st.session_state.likert_cols].mean().round(2)
@@ -482,29 +488,27 @@ elif page == "Cluster Profiles":
                         if pd.notna(val):
                             pct = int((val / 5) * 100)
                             st.markdown(
-                                f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:10px;color:#4a5068'>"
-                                f"<div style='width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{col_name}</div>"
+                                f"<div style='display:flex;align-items:center;gap:8px;"
+                                f"margin-bottom:6px;font-size:10px;color:#4a5068'>"
+                                f"<div style='width:120px;flex-shrink:0;overflow:hidden;"
+                                f"text-overflow:ellipsis;white-space:nowrap'>{col_name}</div>"
                                 f"<div style='flex:1;height:3px;background:#d8dce8;border-radius:2px;overflow:hidden'>"
                                 f"<div style='width:{pct}%;height:100%;background:{col};border-radius:2px'></div></div>"
                                 f"<div style='width:36px;text-align:right;color:#1a1d2e'>{val}/5</div></div>",
                                 unsafe_allow_html=True,
                             )
 
-                # Sentiment summary
                 if sc:
                     st.markdown("**Sentiment**")
-                    s_pos = sc.get("positive", 0)
-                    s_neg = sc.get("negative", 0)
-                    s_neu = sc.get("neutral", 0)
                     cols_s = st.columns(3)
-                    cols_s[0].metric("Positive", f"{s_pos}%")
-                    cols_s[1].metric("Negative", f"{s_neg}%")
-                    cols_s[2].metric("Neutral",  f"{s_neu}%")
+                    cols_s[0].metric("Positive", f"{sc.get('positive', 0)}%")
+                    cols_s[1].metric("Negative", f"{sc.get('negative', 0)}%")
+                    cols_s[2].metric("Neutral",  f"{sc.get('neutral',  0)}%")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: DASHBOARD
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 elif page == "Dashboard":
     st.title("Insights Dashboard")
 
@@ -512,16 +516,16 @@ elif page == "Dashboard":
         st.info("Run the pipeline first from Upload & Config.")
         st.stop()
 
-    df        = st.session_state.labeled_df
-    k         = st.session_state.best_k
-    labels    = st.session_state.cluster_labels
-    sent_data = st.session_state.sentiment_data or {}
-    theme_data = st.session_state.theme_data or {}
-    action_data = st.session_state.action_data or {}
-    sent_summ = sent_data.get("cluster_summary", {})
-    urgent    = [r for r in (sent_data.get("results") or []) if r.get("flag_urgent")]
+    df          = st.session_state.labeled_df
+    k           = st.session_state.best_k
+    labels      = st.session_state.cluster_labels
+    sent_data   = st.session_state.sentiment_data  or {}
+    theme_data  = st.session_state.theme_data      or {}
+    action_data = st.session_state.action_data     or {}
+    sent_summ   = sent_data.get("cluster_summary", {})
+    urgent      = [r for r in (sent_data.get("results") or []) if r.get("flag_urgent")]
 
-    # ── KPIs ──────────────────────────────────────────────────────
+    # ── KPI Row ──────────────────────────────────────────────────────────
     all_pos = [s.get("positive", 0) for s in sent_summ.values()]
     avg_pos = round(sum(all_pos) / len(all_pos)) if all_pos else 0
     avg_sat = 0.0
@@ -529,53 +533,60 @@ elif page == "Dashboard":
         avg_sat = df[st.session_state.likert_cols].mean().mean()
 
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Overall Positive",  f"{avg_pos}%",   help="% of responses classified as positive")
-    kpi2.metric("Urgent Flags",       len(urgent),     help="Responses flagged for immediate attention")
-    kpi3.metric("Avg Satisfaction",   f"{avg_sat:.1f}", help="Mean Likert rating across all questions")
-    kpi4.metric("Action Items",       len(action_data.get("insights", [])), help="Improvement suggestions extracted")
+    kpi1.metric("Overall Positive",  f"{avg_pos}%",       help="% of responses classified as positive")
+    kpi2.metric("Urgent Flags",       len(urgent),         help="Responses flagged for immediate attention")
+    kpi3.metric("Avg Satisfaction",   f"{avg_sat:.1f}/5",  help="Mean Likert rating across all questions")
+    kpi4.metric("Action Items",       len(action_data.get("insights", [])))
 
     st.markdown("---")
 
-    # ── Scatter + Sentiment ───────────────────────────────────────
+    # ── Charts ────────────────────────────────────────────────────────────
     try:
         import plotly.graph_objects as go
+
         col_left, col_right = st.columns(2)
 
         with col_left:
-            st.markdown("**Cluster Map** — PCA 2D projection")
+            st.markdown("**Cluster Map** — 2D PCA Projection")
             fig_scatter = go.Figure()
             pca = st.session_state.pca_coords
+
             for ci in range(k):
                 mask = df["cluster"].values == ci
                 if pca is not None and len(pca) >= len(df):
                     xs = pca[mask, 0]
                     ys = pca[mask, 1]
                 else:
-                    center = [(-2.5 + ci * 1.8), (1.8 - ci * 1.2)]
-                    xs = center[0] + np.random.randn(mask.sum()) * 0.8
-                    ys = center[1] + np.random.randn(mask.sum()) * 0.8
-                cl = labels.get(str(ci), labels.get(ci, {}))
+                    # Fallback: synthetic positions if PCA data is unavailable.
+                    xs = np.random.randn(mask.sum()) * 0.8 + ci * 1.8
+                    ys = np.random.randn(mask.sum()) * 0.8
+
+                cl_info = labels.get(str(ci), labels.get(ci, {}))
                 fig_scatter.add_trace(go.Scatter(
                     x=xs, y=ys, mode="markers",
-                    name=cl.get("label", f"C{ci}"),
+                    name=cl_info.get("label", f"C{ci}"),
                     marker=dict(color=cluster_color(ci), size=8, opacity=0.8),
                 ))
+
             fig_scatter.update_layout(
                 paper_bgcolor="#ffffff", plot_bgcolor="#f4f5f8",
                 font=dict(family="DM Mono", color="#4a5068", size=10),
                 legend=dict(font=dict(size=10), bgcolor="#ffffff", bordercolor="#d8dce8", borderwidth=1),
-                margin=dict(l=0, r=0, t=10, b=0),
-                height=280,
+                margin=dict(l=0, r=0, t=10, b=0), height=280,
                 xaxis=dict(gridcolor="#d8dce8"), yaxis=dict(gridcolor="#d8dce8"),
             )
             st.plotly_chart(fig_scatter, use_container_width=True)
 
         with col_right:
             st.markdown("**Sentiment by Cluster**")
-            cl_names = [labels.get(str(i), labels.get(i, {})).get("label", f"C{i}") for i in range(k)]
+            cl_names = [
+                labels.get(str(i), labels.get(i, {})).get("label", f"C{i}")
+                for i in range(k)
+            ]
             pos_vals = [sent_summ.get(str(i), {}).get("positive", 0) for i in range(k)]
             neu_vals = [sent_summ.get(str(i), {}).get("neutral",  0) for i in range(k)]
             neg_vals = [sent_summ.get(str(i), {}).get("negative", 0) for i in range(k)]
+
             fig_sent = go.Figure(data=[
                 go.Bar(name="Positive", x=cl_names, y=pos_vals, marker_color=hex_to_rgba("#1a8a82", 0.8)),
                 go.Bar(name="Neutral",  x=cl_names, y=neu_vals, marker_color=hex_to_rgba("#8a8f9e", 0.4)),
@@ -586,7 +597,8 @@ elif page == "Dashboard":
                 font=dict(family="DM Mono", color="#4a5068", size=10),
                 legend=dict(font=dict(size=10), bgcolor="#ffffff", bordercolor="#d8dce8", borderwidth=1),
                 margin=dict(l=0, r=0, t=10, b=0), height=280,
-                xaxis=dict(gridcolor="#d8dce8"), yaxis=dict(gridcolor="#d8dce8", ticksuffix="%"),
+                xaxis=dict(gridcolor="#d8dce8"),
+                yaxis=dict(gridcolor="#d8dce8", ticksuffix="%"),
             )
             st.plotly_chart(fig_sent, use_container_width=True)
 
@@ -595,8 +607,8 @@ elif page == "Dashboard":
 
     st.markdown("---")
 
-    # ── Themes + Actions ──────────────────────────────────────────
-    themes = theme_data.get("themes", [])
+    # ── Themes + Action items ─────────────────────────────────────────────
+    themes   = theme_data.get("themes",   [])
     insights = action_data.get("insights", [])
 
     col_t, col_a = st.columns(2)
@@ -610,13 +622,17 @@ elif page == "Dashboard":
                     x=[t["count"] for t in themes],
                     y=[t["name"]  for t in themes],
                     orientation="h",
-                    marker_color=[hex_to_rgba(CLUSTER_COLORS[i % len(CLUSTER_COLORS)], 0.6) for i in range(len(themes))],
+                    marker_color=[
+                        hex_to_rgba(CLUSTER_COLORS[i % len(CLUSTER_COLORS)], 0.6)
+                        for i in range(len(themes))
+                    ],
                 ))
                 fig_theme.update_layout(
                     paper_bgcolor="#ffffff", plot_bgcolor="#f4f5f8",
                     font=dict(family="DM Mono", color="#4a5068", size=10),
                     margin=dict(l=0, r=0, t=10, b=0), height=260,
-                    xaxis=dict(gridcolor="#d8dce8"), yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+                    xaxis=dict(gridcolor="#d8dce8"),
+                    yaxis=dict(gridcolor="rgba(0,0,0,0)"),
                 )
                 st.plotly_chart(fig_theme, use_container_width=True)
             except ImportError:
@@ -626,14 +642,14 @@ elif page == "Dashboard":
             st.info("No themes available.")
 
     with col_a:
-        st.markdown("**Actionable Suggestions**")
+        st.markdown("**Top Actionable Suggestions**")
         if insights:
             priority_colors = {"high": "#e07b6a", "medium": "#e8c468", "low": "#5ebfb5"}
             for ins in insights[:6]:
-                pc = priority_colors.get(ins.get("priority",""), "#e8c468")
+                pc = priority_colors.get(ins.get("priority", ""), "#e8c468")
                 st.markdown(
-                    f"<div style='border-left:3px solid {pc};padding:10px 14px;background:#ffffff;"
-                    f"border-radius:3px;margin-bottom:8px;border:1px solid #d8dce8'>"
+                    f"<div style='border-left:3px solid {pc};padding:10px 14px;"
+                    f"background:#ffffff;border-radius:3px;margin-bottom:8px;border:1px solid #d8dce8'>"
                     f"<span style='font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:{pc}'>"
                     f"{ins.get('priority','').upper()}</span> "
                     f"<span style='font-size:9px;color:#8a8f9e'>· {ins.get('category','')}</span>"
@@ -645,20 +661,21 @@ elif page == "Dashboard":
         else:
             st.info("No actionable insights extracted.")
 
-    # ── Urgent Flags ───────────────────────────────────────────────
+    # ── Urgent flags ──────────────────────────────────────────────────────
     if urgent:
         st.markdown("---")
         st.markdown("**⚠ Urgent Flags**")
         for f in urgent:
             st.error(
-                f"🚨 **{f['respondent_id']}** (Cluster {f['cluster']}) — "
-                f"{f.get('flag_reason','Flagged for urgent review')}"
+                f"🚨 **{f.get('respondent_id','?')}** "
+                f"(Cluster {f.get('cluster','?')}) — "
+                f"{f.get('flag_reason', 'Flagged for urgent review')}"
             )
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: RESPONDENT TABLE
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 elif page == "Respondent Table":
     st.title("Respondent Table")
 
@@ -673,8 +690,8 @@ elif page == "Respondent Table":
     results   = sent_data.get("results", [])
     text_cols = st.session_state.text_cols
 
-    # ── Build flat table ──────────────────────────────────────────
-    sent_map = {r["respondent_id"]: r for r in results}
+    # Build a lookup dict: respondent_id → sentiment result dict.
+    sent_map = {r["respondent_id"]: r for r in results if "respondent_id" in r}
 
     rows = []
     for ci in range(k):
@@ -683,46 +700,45 @@ elif page == "Respondent Table":
         for idx, row in cluster_rows.iterrows():
             rid  = f"R{str(idx + 1).zfill(3)}"
             sent = sent_map.get(rid, {})
-            # First text column for preview
-            preview = ""
+            preview       = ""
             question_text = ""
             if text_cols:
-                preview = str(row.get(text_cols[0], "") or "").strip()[:120]
+                preview       = str(row.get(text_cols[0], "") or "").strip()[:120]
                 question_text = text_cols[0]
             rows.append({
                 "ID":            rid,
                 "Cluster":       f"C{ci}: {cl.get('label', f'Cluster {ci}')}",
-                "Sentiment":     sent.get("sentiment", "—"),
+                "Sentiment":     sent.get("sentiment",  "—"),
                 "Confidence":    sent.get("confidence", "—"),
                 "Urgent":        "🚨" if sent.get("flag_urgent") else "",
                 "Key Phrases":   " · ".join(sent.get("key_phrases", [])),
                 "Urgent Reason": sent.get("flag_reason") or "",
-                f"Q: {question_text}" if question_text else "Response": preview,
+                (f"Q: {question_text}" if question_text else "Response"): preview,
             })
 
     flat_df = pd.DataFrame(rows)
 
-    # ── Filters ───────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        cluster_options = ["All"] + [f"C{i}: {labels.get(str(i),{}).get('label','')}" for i in range(k)]
-        filter_cluster  = st.selectbox("Filter by Cluster", cluster_options)
-    with col2:
+    # ── Filters ───────────────────────────────────────────────────────────
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        cluster_options = ["All"] + [
+            f"C{i}: {labels.get(str(i),{}).get('label','')}" for i in range(k)
+        ]
+        filter_cluster = st.selectbox("Filter by Cluster", cluster_options)
+    with fc2:
         filter_sentiment = st.selectbox("Filter by Sentiment", ["All","positive","neutral","negative","mixed"])
-    with col3:
+    with fc3:
         filter_urgent = st.selectbox("Filter by Urgent", ["All","Urgent Only"])
 
-    if filter_cluster   != "All":       flat_df = flat_df[flat_df["Cluster"] == filter_cluster]
-    if filter_sentiment != "All":       flat_df = flat_df[flat_df["Sentiment"] == filter_sentiment]
-    if filter_urgent    == "Urgent Only": flat_df = flat_df[flat_df["Urgent"] == "🚨"]
+    if filter_cluster   != "All":         flat_df = flat_df[flat_df["Cluster"]   == filter_cluster]
+    if filter_sentiment != "All":         flat_df = flat_df[flat_df["Sentiment"] == filter_sentiment]
+    if filter_urgent    == "Urgent Only": flat_df = flat_df[flat_df["Urgent"]    == "🚨"]
 
-    # ── Export ────────────────────────────────────────────────────
+    # ── Export ────────────────────────────────────────────────────────────
     csv_bytes = flat_df.to_csv(index=False).encode()
     st.download_button("↓ Export CSV", csv_bytes, "respondent_table.csv", "text/csv")
+    st.markdown(f"**{len(flat_df)} respondents shown**")
 
-    st.markdown(f"**{len(flat_df)} respondents**")
-
-    # ── Table ─────────────────────────────────────────────────────
     st.dataframe(
         flat_df,
         use_container_width=True,
@@ -733,19 +749,19 @@ elif page == "Respondent Table":
         hide_index=True,
     )
 
-    # ── Respondent Detail Expander ────────────────────────────────
+    # ── Respondent detail view ────────────────────────────────────────────
     st.markdown("---")
     st.markdown("**View Full Response Detail**")
     selected_id = st.text_input("Enter Respondent ID (e.g. R001)", placeholder="R001")
     if selected_id:
         sent_rec = sent_map.get(selected_id, {})
-        # Find the DataFrame row
         idx = None
         try:
-            idx = int(selected_id.replace("R","")) - 1
+            idx = int(selected_id.replace("R", "")) - 1
         except Exception:
             pass
-        if idx is not None and idx < len(df):
+
+        if idx is not None and 0 <= idx < len(df):
             row = df.iloc[idx]
             ci  = int(row.get("cluster", 0))
             col = cluster_color(ci)
@@ -758,31 +774,31 @@ elif page == "Respondent Table":
                     f"Cluster {ci}: {cl.get('label','—')}</div>",
                     unsafe_allow_html=True,
                 )
-                if text_cols:
-                    for qcol in text_cols:
-                        answer = str(row.get(qcol, "") or "").strip()
-                        if answer:
-                            st.markdown(
-                                f"<div style='font-size:9px;color:#8a8f9e;text-transform:uppercase;letter-spacing:.1em;margin-top:12px'>"
-                                f"Q: {qcol}</div>"
-                                f"<div style='font-family:Fraunces,serif;font-style:italic;font-size:13px;color:#1a1d2e;"
-                                f"border-left:3px solid {col};padding:10px 14px;background:#eef0f5;margin-top:4px;line-height:1.7'>"
-                                f"\u201c{answer}\u201d</div>",
-                                unsafe_allow_html=True,
-                            )
+                for qcol in (text_cols or []):
+                    answer = str(row.get(qcol, "") or "").strip()
+                    if answer:
+                        st.markdown(
+                            f"<div style='font-size:9px;color:#8a8f9e;text-transform:uppercase;"
+                            f"letter-spacing:.1em;margin-top:12px'>Q: {qcol}</div>"
+                            f"<div style='font-family:Fraunces,serif;font-style:italic;font-size:13px;"
+                            f"color:#1a1d2e;border-left:3px solid {col};padding:10px 14px;"
+                            f"background:#eef0f5;margin-top:4px;line-height:1.7'>"
+                            f"\u201c{answer}\u201d</div>",
+                            unsafe_allow_html=True,
+                        )
 
             with right_d:
-                s = sent_rec.get("sentiment","—")
-                st.markdown(f"**Sentiment:** {s}")
+                st.markdown(f"**Sentiment:** {sent_rec.get('sentiment','—')}")
                 st.markdown(f"**Confidence:** {sent_rec.get('confidence','—')}")
                 if sent_rec.get("flag_urgent"):
                     st.error(f"🚨 {sent_rec.get('flag_reason','Urgent')}")
                 if sent_rec.get("key_phrases"):
                     st.markdown("**Key Phrases**")
-                    for p in sent_rec["key_phrases"]:
+                    for phrase in sent_rec["key_phrases"]:
                         st.markdown(
-                            f"<span style='display:inline-block;background:#eef0f5;border:1px solid #d8dce8;"
-                            f"padding:3px 10px;border-radius:10px;font-size:10px;color:#4a5068;margin:2px'>{p}</span>",
+                            f"<span style='display:inline-block;background:#eef0f5;"
+                            f"border:1px solid #d8dce8;padding:3px 10px;border-radius:10px;"
+                            f"font-size:10px;color:#4a5068;margin:2px'>{phrase}</span>",
                             unsafe_allow_html=True,
                         )
                 if st.session_state.likert_cols:
@@ -795,24 +811,24 @@ elif page == "Respondent Table":
             st.warning(f"Respondent {selected_id} not found.")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: ASK AI
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 elif page == "Ask AI":
     st.title("Ask AI")
-    st.markdown("Ask Claude anything about your survey results.")
+    st.markdown("Ask anything about your survey results.")
 
     if not st.session_state.pipeline_done:
-        st.info("Run the pipeline first.")
+        st.info("Run the pipeline first from Upload & Config.")
         st.stop()
 
-    # Build context summary for the LLM
-    k         = st.session_state.best_k
-    labels    = st.session_state.cluster_labels
-    sent_data = st.session_state.sentiment_data or {}
-    action_data = st.session_state.action_data or {}
-    theme_data  = st.session_state.theme_data or {}
+    k           = st.session_state.best_k
+    labels      = st.session_state.cluster_labels
+    sent_data   = st.session_state.sentiment_data  or {}
+    action_data = st.session_state.action_data     or {}
+    theme_data  = st.session_state.theme_data      or {}
 
+    # Build a rich context summary for the LLM.
     cl_desc = "\n".join(
         f"Cluster {i} '{labels.get(str(i),{}).get('label','—')}': "
         f"n={len(st.session_state.labeled_df[st.session_state.labeled_df['cluster']==i])}, "
@@ -833,15 +849,15 @@ elif page == "Ask AI":
         f"Themes: {themes_list}\n\nTop actions:\n{top_actions}\n\n"
         f"Urgent flags: {urgent_n}"
     )
-    sys_prompt = (
+    ai_system_prompt = (
         "You are an expert in learning & development evaluation analytics. "
         "You have completed a full analysis of a post-program survey.\n"
         f"ANALYSIS CONTEXT:\n{context}\n"
         "Answer questions precisely. Reference specific clusters, sentiment data, and themes. "
-        "Keep responses to 2-5 sentences unless the user asks for more detail."
+        "Keep responses to 2–5 sentences unless the user asks for more detail."
     )
 
-    # Quick questions
+    # ── Quick-question buttons ────────────────────────────────────────────
     st.markdown("**Quick Questions**")
     quick_qs = [
         "Which cluster needs the most urgent attention?",
@@ -852,22 +868,25 @@ elif page == "Ask AI":
     cols_q = st.columns(4)
     for i, q in enumerate(quick_qs):
         if cols_q[i].button(q, key=f"qq_{i}"):
-            st.session_state["chat_input_prefill"] = q
+            st.session_state["chat_prefill"] = q
 
     st.markdown("---")
 
-    # Chat
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = [
-            {"role": "assistant", "content": "Hello! I have full context of your survey analysis. What would you like to explore?"}
-        ]
+    # Initialize chat history on first load.
+    if not st.session_state.chat_history:
+        st.session_state.chat_history = [{
+            "role": "assistant",
+            "content": "Hello! I have full context of your survey analysis. What would you like to explore?",
+        }]
 
+    # Render existing chat messages.
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    prefill = st.session_state.pop("chat_input_prefill", "")
-    user_input = st.chat_input("Ask about your results…", key="chat_main")
+    # Handle prefilled question from quick-question buttons.
+    prefill     = st.session_state.pop("chat_prefill", "")
+    user_input  = st.chat_input("Ask about your results…")
     if not user_input and prefill:
         user_input = prefill
 
@@ -876,11 +895,10 @@ elif page == "Ask AI":
         with st.chat_message("user"):
             st.write(user_input)
 
-        from backend.nlp.llm_client import call_llm_with_retry
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
-                    reply = call_llm_with_retry(sys_prompt, user_input, max_tokens=600)
+                    reply = call_llm_with_retry(ai_system_prompt, user_input, max_tokens=600)
                 except Exception as e:
                     reply = f"Error: {e}"
             st.write(reply)

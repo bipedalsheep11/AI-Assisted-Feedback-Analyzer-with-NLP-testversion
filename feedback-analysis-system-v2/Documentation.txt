@@ -1,0 +1,597 @@
+================================================================================
+FEEDBACK ANALYSIS SYSTEM — TECHNICAL DOCUMENTATION
+================================================================================
+Version     : 1.0.0
+Last updated: 2025
+License     : MIT
+--------------------------------------------------------------------------------
+
+
+TABLE OF CONTENTS
+─────────────────
+1.  System Overview
+2.  Architecture
+3.  Module Reference
+     3.1  app.py
+     3.2  backend/nlp/llm_client.py
+     3.3  backend/nlp/auto_clustering.py
+     3.4  backend/nlp/format_responses.py
+     3.5  backend/nlp/analysis_modules.py
+     3.6  backend/utils/get_system_prompt.py
+     3.7  backend/utils/document_reader.py
+     3.8  backend/utils/data_cleaning.py
+4.  Pipeline Data Flow
+5.  LLM Prompt Design
+6.  Session State Reference
+7.  Error Handling Strategy
+8.  Extension Guide
+9.  Known Limitations
+10. Glossary
+
+
+================================================================================
+1. SYSTEM OVERVIEW
+================================================================================
+
+The Feedback Analysis System is a Streamlit-based web application that applies
+machine learning and large language model (LLM) techniques to post-program
+evaluation surveys. It is designed for training managers and organizational
+development professionals who need to extract structured insights from
+mixed-format survey data (numerical Likert ratings + free-text responses).
+
+The system performs six sequential analysis stages:
+
+  Stage 1-2 : Automatic clustering of respondents into behaviorally similar
+               groups using sentence embeddings, normalized Likert scores, PCA
+               dimensionality reduction, and K-Means with silhouette-based
+               optimal k selection.
+
+  Stage 3   : LLM-powered cluster labelling — each cluster receives a short
+               label, a respondent profile paragraph, a list of key drivers,
+               and a distinguishing feature comparing it to other clusters.
+
+  Stage 4   : Per-respondent sentiment classification (positive / negative /
+               neutral / mixed) with confidence rating and urgent-flag logic.
+
+  Stage 5   : Thematic clustering — either using predefined theme labels
+               supplied by the user, or discovered automatically by the LLM.
+
+  Stage 6   : Actionable insight extraction — concrete improvement suggestions
+               ranked by priority (high/medium/low) and breadth (isolated
+               through widespread).
+
+All LLM calls use a unified client (llm_client.py) that tries Groq first and
+falls back to a locally running Ollama instance if Groq is unavailable.
+
+
+================================================================================
+2. ARCHITECTURE
+================================================================================
+
+feedback-analysis-system/
+├── app.py                          Entry point. All Streamlit UI lives here.
+├── requirements.txt
+├── .env.example
+├── .gitignore
+├── README.md
+├── Documentation.txt
+│
+└── backend/
+    ├── __init__.py
+    ├── nlp/
+    │   ├── __init__.py
+    │   ├── llm_client.py           Groq + Ollama unified wrapper
+    │   ├── auto_clustering.py      ML pipeline: embed → cluster → label
+    │   ├── format_responses.py     DataFrame → LLM-readable text
+    │   └── analysis_modules.py     Label / Sentiment / Themes / Insights
+    │
+    └── utils/
+        ├── __init__.py
+        ├── get_system_prompt.py    System prompt builder
+        ├── document_reader.py      Multi-format file loader
+        └── data_cleaning.py        Likert normalization utilities
+
+Design principles:
+
+  Separation of concerns: All ML and LLM logic lives in backend/. The
+  app.py file handles only layout, navigation, and state management.
+  This makes backend modules independently testable.
+
+  Centralized LLM access: All four analysis functions call call_llm_with_retry()
+  from a single module. Changing the model or backend requires editing one file.
+
+  Stateless backend: No backend function reads from or writes to
+  st.session_state. Data flows in and out via function parameters and return
+  values only. This keeps the backend portable and testable outside Streamlit.
+
+  Incremental pipeline: Stages 3–6 are individually try/caught in app.py.
+  A failure in sentiment analysis does not prevent theme or insight extraction.
+
+
+================================================================================
+3. MODULE REFERENCE
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+3.1  app.py
+────────────────────────────────────────────────────────────────────────────────
+
+Entry point for the Streamlit application.
+
+Responsibilities:
+  - Page config and global CSS injection
+  - Session state initialization (init_state())
+  - Sidebar navigation with pipeline status indicator
+  - Six-stage pipeline orchestration triggered by the "Run Analysis" button
+  - Rendering results across five pages:
+      Upload & Config, Run Pipeline, Cluster Profiles, Dashboard,
+      Respondent Table, Ask AI
+
+Key conventions:
+  - All page renderers are in the same file under if/elif blocks keyed by
+    the sidebar radio value (page variable).
+  - Color helpers (cluster_color, hex_to_rgba) are defined at module level
+    and reused across all pages.
+  - Plotly charts are wrapped in try/except ImportError so the app degrades
+    gracefully if plotly is not installed.
+
+────────────────────────────────────────────────────────────────────────────────
+3.2  backend/nlp/llm_client.py
+────────────────────────────────────────────────────────────────────────────────
+
+Unified LLM wrapper with automatic fallback.
+
+Public API:
+
+  call_llm(system_prompt, user_prompt, max_tokens=1000, temperature=0.05)
+    → str
+    Sends a two-message conversation (system + user) to the active backend.
+    Returns the model's raw text response.
+    Tries Groq first; falls back to Ollama on any exception.
+
+  call_llm_with_retry(system_prompt, user_prompt, max_tokens, temperature, retries=3)
+    → str
+    Wraps call_llm() with exponential back-off retry (1s, 2s, 4s delays).
+    RuntimeError (both backends down) is not retried.
+
+  parse_llm_json(raw_text, fallback={})
+    → dict | list
+    Strips markdown code fences and parses the model's response as JSON.
+    Returns the fallback value if parsing fails, so the pipeline doesn't crash.
+
+  get_active_backend()
+    → str ("groq" | "ollama" | "none")
+    Returns the currently active backend — used by the sidebar status line.
+
+Configuration constants (edit to change models):
+  GROQ_MODEL   = "llama-3.3-70b-versatile"
+  OLLAMA_MODEL = "qwen3:8b"
+
+Environment variables read:
+  GROQ_API_KEY  — Groq authentication key (loaded from .env via python-dotenv)
+
+────────────────────────────────────────────────────────────────────────────────
+3.3  backend/nlp/auto_clustering.py
+────────────────────────────────────────────────────────────────────────────────
+
+Full ML pipeline from raw DataFrame to clustered DataFrame.
+
+Public API (primary entry point):
+
+  run_clustering_pipeline(dataframe, force_k=None, n_pca_dims=30)
+    → dict {
+        "labeled_df":  pd.DataFrame with 'cluster' column,
+        "best_k":      int,
+        "likert_cols": list[str],
+        "text_cols":   list[str],
+        "pca_coords":  np.ndarray shape (n_respondents, 2),
+        "scores":      dict with silhouette scores
+      }
+
+Internal functions (called by run_clustering_pipeline):
+
+  separate_likert_from_text(dataframe, likert_max_unique=10)
+    → dict {"likert": [...], "text": [...], "other": [...]}
+    Heuristic: numeric + ≤10 unique values = Likert.
+               non-numeric + contains letters = text.
+
+  normalize_likert(likert_df)
+    → np.ndarray shape (n_respondents, n_likert_cols)
+    Min-Max normalization per column. Missing values filled with column median.
+
+  embed_text_responses(text_df)
+    → np.ndarray shape (n_respondents, 384)
+    Uses SentenceTransformer('all-MiniLM-L6-v2').
+    Concatenates all text columns per respondent before encoding.
+
+  combine_features(normalized_likert, text_embeddings)
+    → np.ndarray (horizontal stack)
+
+  reduce_dimensions(combined_features, n_components=50)
+    → np.ndarray shape (n_respondents, n_components)
+    PCA with random_state=42. Reports variance retained.
+
+  auto_cluster(features, min_k=2, max_k=8, force_k=None)
+    → (best_k: int, best_labels: np.ndarray, scores_summary: dict)
+    Tries every k in [min_k, max_k], scores with silhouette_score(),
+    returns the k with the highest score.
+
+  attach_clusters(dataframe, cluster_labels)
+    → pd.DataFrame
+    Returns a copy of the DataFrame with a 'cluster' integer column.
+
+────────────────────────────────────────────────────────────────────────────────
+3.4  backend/nlp/format_responses.py
+────────────────────────────────────────────────────────────────────────────────
+
+Converts clustered DataFrame to LLM-readable text blocks.
+
+Public API:
+
+  generate_formatted_responses(labeled_df, cluster_id, likert_cols, text_cols)
+    → [ratings_str: str, responses_str: str]
+
+    ratings_str: average Likert score per question for this cluster.
+    responses_str: CSV-style table of individual text responses.
+    Respondent IDs are formatted as R001, R002, … for consistent cross-
+    referencing between the analysis stages.
+
+  get_all_clusters_table(labeled_df, best_k, likert_cols, text_cols)
+    → [all_ratings_str: str, all_responses_str: str]
+    Concatenates output of generate_formatted_responses() for all clusters.
+    This combined string is passed to every LLM analysis stage.
+
+────────────────────────────────────────────────────────────────────────────────
+3.5  backend/nlp/analysis_modules.py
+────────────────────────────────────────────────────────────────────────────────
+
+All four LLM-powered analysis functions.
+
+Public API:
+
+  label_all_clusters(best_k, labeled_df, likert_cols, text_cols,
+                     all_clusters_table, system_prompt)
+    → dict {"0": {label, respondent_profile, key_drivers, distinguishing_features},
+             "1": {...}, ...}
+    Keys are string cluster IDs. Calls label_cluster_with_llm() per cluster.
+
+  label_cluster_with_llm(cluster_id, labeled_df, likert_cols, text_cols,
+                          all_clusters_table, system_prompt)
+    → dict {label, respondent_profile, key_drivers, distinguishing_features}
+    Single-cluster labelling. Passes all-cluster context so labels are
+    comparatively distinct.
+
+  analyze_sentiment(all_clusters_responses, system_prompt)
+    → dict {
+        "results":         list of per-respondent sentiment dicts,
+        "cluster_summary": dict mapping cluster_id → {positive%, negative%, neutral%},
+        "total_classified": int
+      }
+    Each result dict: {cluster, respondent_id, sentiment, confidence,
+                       flag_urgent, flag_reason, key_phrases}
+
+  cluster_themes(all_clusters_responses, system_prompt, predefined_themes=None)
+    → dict {
+        "themes":          list of {name, count, description},
+        "coded_responses": list of {respondent_id, cluster, assigned_theme,
+                                    theme_fit, supporting_quote}
+      }
+    predefined_themes=None triggers auto-discovery mode.
+
+  extract_actionable_insights(all_clusters_responses, system_prompt)
+    → dict {
+        "total_insights":   int,
+        "insights":         list of insight objects,
+        "priority_summary": {high: str, medium: str, low: str}
+      }
+    Each insight: {insight_id, priority, category, insight, source_clusters,
+                   evidence, breadth}
+
+────────────────────────────────────────────────────────────────────────────────
+3.6  backend/utils/get_system_prompt.py
+────────────────────────────────────────────────────────────────────────────────
+
+Builds the system prompt passed to every LLM call.
+
+Public API:
+
+  get_system_prompt(document_text="", program_name="")
+    → str
+    Returns a complete system prompt string.
+    If document_text is provided, it is injected (truncated to 6000 chars)
+    so the model's analysis is grounded in the actual program context.
+    If program_name is provided, it is mentioned explicitly.
+
+────────────────────────────────────────────────────────────────────────────────
+3.7  backend/utils/document_reader.py
+────────────────────────────────────────────────────────────────────────────────
+
+Unified file loader that routes to the correct extractor by extension.
+
+Public API:
+
+  load_file(file, filename)
+    → dict {
+        "raw_text":   str | None,
+        "dataframe":  pd.DataFrame | None,
+        "file_type":  "pdf" | "docx" | "txt" | "csv" | "xlsx",
+        "page_count": int | None
+      }
+    PDF and DOCX return raw_text (no dataframe).
+    CSV and XLSX return dataframe (no raw_text).
+    TXT returns raw_text.
+
+Internal extractors:
+
+  extract_text_from_pdf(file)   → str   (uses PyMuPDF / fitz)
+  extract_text_from_docx(file)  → str   (uses python-docx)
+  extract_text_from_txt(file)   → str   (UTF-8 with latin-1 fallback)
+
+────────────────────────────────────────────────────────────────────────────────
+3.8  backend/utils/data_cleaning.py
+────────────────────────────────────────────────────────────────────────────────
+
+Likert value normalization utilities.
+
+Public API:
+
+  convert_likert_value(raw_value, label_map)
+    → int | None
+    Handles four input formats:
+      1. Plain integer or float string ("3", "4.0")
+      2. Text label ("Good", "SATISFIED", "very good") — via label_map
+      3. Combined format ("4 - Satisfied", "3: Fair") — extracts leading digit
+      4. NaN / None → returns None
+
+  clean_likert_column(dataframe, column_name, label_map)
+    → pd.Series
+    Applies convert_likert_value() to every cell in one column.
+
+  clean_all_likert_columns(dataframe, likert_columns, label_map)
+    → pd.DataFrame
+    Iterates over a list of column names and cleans each one.
+
+  drop_index_column(dataframe)
+    → pd.DataFrame
+    Removes the first column if its name is "", "unnamed: 0", "index", etc.
+
+
+================================================================================
+4. PIPELINE DATA FLOW
+================================================================================
+
+User uploads CSV → load_file() → raw pd.DataFrame
+                                        ↓
+                           drop_index_column()
+                                        ↓
+                     run_clustering_pipeline()
+                          ↙          ↓          ↘
+             normalize_likert   embed_text   (one or both)
+                          ↘          ↙
+                     combine_features()
+                                ↓
+                     reduce_dimensions() [PCA, n=30]
+                                ↓
+                     auto_cluster()  [K-Means, k=2..8]
+                                ↓
+                     attach_clusters() → labeled_df
+                                ↓
+                     get_all_clusters_table()
+                       → [ratings_str, responses_str]
+                                ↓
+               ┌────────────────┼────────────────────────┐
+               ↓                ↓                        ↓
+    label_all_clusters   analyze_sentiment    cluster_themes
+       → cluster_labels    → sentiment_data    → theme_data
+                                                         ↓
+                                         extract_actionable_insights
+                                              → action_data
+                                                         ↓
+                                              Stored in session state
+                                              → Rendered in UI pages
+
+
+================================================================================
+5. LLM PROMPT DESIGN
+================================================================================
+
+All four analysis modules use the same two-message structure:
+
+  Message 1 (role: "system"):
+    Built by get_system_prompt(). Defines the model's persona as a training
+    evaluation specialist. Embeds the optional program context document.
+    Instructs the model to return ONLY valid JSON with no markdown or fences.
+
+  Message 2 (role: "user"):
+    Task-specific. Contains:
+      - The formatted ratings and responses (from format_responses.py)
+      - A precise JSON schema the model must follow exactly
+      - Explicit definitions for all categorical values (sentiment levels,
+        priority levels, theme fit levels, breadth levels)
+
+JSON parsing strategy:
+  parse_llm_json() strips markdown code fences before calling json.loads().
+  If parsing fails, a structured fallback dict is returned so downstream
+  code doesn't crash on a bad model response.
+
+Temperature settings:
+  All analysis calls use temperature=0.05 (near-deterministic).
+  This minimizes variability in classification tasks (sentiment, theme
+  assignment) where consistency matters more than creativity.
+
+
+================================================================================
+6. SESSION STATE REFERENCE
+================================================================================
+
+All persistent data is stored in st.session_state. The following keys are
+initialized by init_state() in app.py:
+
+  pipeline_done   bool          True after a successful pipeline run
+  labeled_df      pd.DataFrame  Survey data with 'cluster' column
+  best_k          int           Number of clusters
+  likert_cols     list[str]     Detected Likert column names
+  text_cols       list[str]     Detected text column names
+  cluster_labels  dict          {"0": {label, profile, ...}, "1": {...}}
+  sentiment_data  dict          {results: [...], cluster_summary: {...}}
+  theme_data      dict          {themes: [...], coded_responses: [...]}
+  action_data     dict          {insights: [...], priority_summary: {...}}
+  pca_coords      np.ndarray    2D PCA coordinates for scatter plot
+  program_name    str           User-supplied programme name
+  document_text   str           Full text of uploaded context document
+  chat_history    list[dict]    [{role, content}, ...] for Ask AI page
+
+
+================================================================================
+7. ERROR HANDLING STRATEGY
+================================================================================
+
+The pipeline uses a tiered error handling approach:
+
+  Critical failures (stop the pipeline):
+    - CSV file cannot be loaded (invalid format, encoding error)
+    - Clustering fails (no valid columns detected)
+  These are handled with st.error() + st.stop().
+
+  Non-critical failures (warn and continue):
+    - Any LLM stage (labelling, sentiment, themes, insights)
+    - Context document cannot be parsed
+  These are handled with st.warning() and the stage's session_state key is
+  set to an empty dict. Later pages render gracefully with "—" fallbacks.
+
+  LLM call failures:
+    - call_llm_with_retry() retries up to 3 times with exponential back-off
+    - RuntimeError (both Groq and Ollama down) is immediately re-raised
+    - parse_llm_json() provides a structured fallback if JSON parsing fails
+
+  Column detection:
+    - If no Likert or text columns are detected, clustering raises ValueError
+      with a diagnostic message explaining what to check in the CSV.
+
+
+================================================================================
+8. EXTENSION GUIDE
+================================================================================
+
+Adding a new analysis stage:
+  1. Write the function in backend/nlp/analysis_modules.py
+     - Accept (all_clusters_responses, system_prompt) as minimum params
+     - Return a structured dict
+     - Call call_llm_with_retry(); parse with parse_llm_json()
+  2. Add the result key to init_state() in app.py
+  3. Add a new spinner block in the pipeline section of the Upload & Config page
+  4. Add a display section to an appropriate results page
+
+Changing the embedding model:
+  Edit the SentenceTransformer() call in auto_clustering.py:
+    model = SentenceTransformer('your-model-name-here')
+  Larger models (e.g. 'all-mpnet-base-v2') produce higher-quality embeddings
+  but run slower. The embedding dimension will also change — no other code
+  needs to be updated because PCA handles the dimension normalization.
+
+Changing the LLM:
+  Edit GROQ_MODEL or OLLAMA_MODEL constants in llm_client.py.
+  For Groq, any model listed at https://console.groq.com/docs/models works.
+  For Ollama, run "ollama list" to see locally available models.
+
+Adding a new results page:
+  1. Add the page name to the st.radio() options list in the sidebar section
+  2. Add an elif page == "Your Page Name": block at the bottom of app.py
+
+Supporting a new document type:
+  Add a new elif branch to load_file() in document_reader.py.
+  Return the same dict structure: {raw_text, dataframe, file_type, page_count}.
+
+
+================================================================================
+9. KNOWN LIMITATIONS
+================================================================================
+
+Token limits:
+  Sentiment analysis and theme clustering send all respondents' responses in
+  one prompt. For very large surveys (300+ respondents), this may exceed the
+  model's context window. Mitigation: chunk responses by cluster and aggregate
+  results across chunks.
+
+Embedding model size:
+  all-MiniLM-L6-v2 is optimized for speed (~80 MB, runs on CPU). For higher-
+  accuracy clustering on ambiguous or domain-specific text, a larger model
+  (e.g. 'all-mpnet-base-v2') would improve results at the cost of runtime.
+
+Cluster stability:
+  K-Means has a random initialization step. The random_state=42 seed and
+  n_init=10 setting make results highly reproducible, but re-running with
+  different seeds may produce slightly different cluster assignments.
+
+Mixed-language surveys:
+  all-MiniLM-L6-v2 performs best on English text. For multilingual surveys,
+  use 'paraphrase-multilingual-MiniLM-L12-v2' instead.
+
+Non-Likert numeric columns:
+  Columns like "age", "years of experience", or "score out of 100" with many
+  unique values are classified as "other" and excluded from clustering.
+  If you want to include them, add them to likert_cols manually before calling
+  run_clustering_pipeline().
+
+Ollama model quality:
+  qwen3:8b is a capable but smaller model. For complex thematic analysis or
+  nuanced insight extraction, the 70b Groq model typically produces higher-
+  quality structured JSON output.
+
+
+================================================================================
+10. GLOSSARY
+================================================================================
+
+Cluster
+  A group of respondents whose combined Likert ratings and text responses are
+  most similar to each other according to the K-Means algorithm.
+
+Embedding / Vector Embedding
+  A fixed-length list of numbers that represents the meaning of a piece of
+  text. Similar texts have similar embeddings (their vectors are numerically
+  close to each other). We use 384-dimensional embeddings.
+
+K-Means
+  A clustering algorithm that partitions data into k groups by minimizing the
+  distance between each point and its cluster's center (centroid).
+
+Likert Scale
+  A rating scale with a fixed number of ordered options, typically 1–5 or
+  1–7, used to measure attitudes or agreement levels.
+
+Min-Max Normalization
+  Rescaling all values in a column so the minimum becomes 0.0 and the maximum
+  becomes 1.0, making columns with different scales comparable.
+
+PCA (Principal Component Analysis)
+  A technique that reduces the number of dimensions in a dataset while
+  retaining as much variation as possible. Used here to reduce the combined
+  feature array from ~400 dimensions to 30 before clustering.
+
+Silhouette Score
+  A measure of cluster quality ranging from -1 to +1. A higher score means
+  clusters are more distinct and internally cohesive. Used to automatically
+  select the optimal number of clusters (k).
+
+Sentiment Analysis
+  Classifying a piece of text as expressing positive, negative, neutral, or
+  mixed emotion.
+
+System Prompt
+  The first message sent to a language model that defines its persona, role,
+  output format requirements, and any domain-specific context it should use.
+
+Temperature (LLM)
+  A parameter controlling the randomness of the model's output. 0.0 produces
+  deterministic, consistent responses. 1.0 produces more varied, creative
+  responses. We use 0.05 for all classification tasks.
+
+Tokenization
+  The process of splitting text into smaller units (tokens) that a language
+  model processes. One token ≈ 4 characters of English text. max_tokens sets
+  an upper limit on how many tokens the model generates in its response.
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
