@@ -60,10 +60,13 @@ def generate_formatted_responses(
         # Header line: "Respondent, Question1, Question2, ..."
         header = "Respondent, " + ", ".join(text_cols)
 
-        # Each data line: "row_number, answer1, answer2, ..."
-        # We use the original DataFrame index so IDs are stable
+        # Each data line: "R001, answer1, answer2, ..."
+        # We zero-pad to 3 digits so IDs sort lexicographically and match
+        # the "R001" format that app_1.py uses for its sent_map lookup.
+        # Without this prefix and padding, the LLM returns bare integers
+        # like "1" which never match "R001" in sent_map.get(rid, {}).
         data_lines = "\n".join(
-            f"{idx + 1}, " + ", ".join(str(t) for t in text_row)
+            f"R{str(idx + 1).zfill(3)}, " + ", ".join(str(t) for t in text_row)
             for idx, text_row in zip(respondent_index, sample_responses)
         )
         formatted_responses = f"Cluster: {cluster_id}\n{'=' * 30}\n{header}\n{data_lines}"

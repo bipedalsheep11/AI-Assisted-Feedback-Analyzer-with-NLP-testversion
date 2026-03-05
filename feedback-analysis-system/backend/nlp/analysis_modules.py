@@ -309,15 +309,21 @@ def analyze_sentiment(
         # List to hold our new segmented strings
         segments = []
         
-        # The actual data rows start at index 3
+        # The actual data rows start at index 3.
+        # We prepend the cluster_id to each segment so the LLM knows
+        # which cluster this respondent belongs to when it fills the
+        # "cluster" field in the JSON. Without this, the LLM has no
+        # reliable way to populate that field and may default to 0.
         for line in lines[3:]:
-            segments.append(f"{header}\n{line}")
+            segments.append(f"Cluster: {cluster_id}\n{header}\n{line}")
             
         # Loop through each segmented line and call the LLM
         for i, segment in enumerate(segments, start=1):
             user_prompt = f"""Analyze the sentiment of the respondent shown below. 
             
-            Respondent responses in CSV format (columns: Respondent Number, then question columns). Treat this as a Comma-Separated Value (CSV) file:
+            The first line shows which cluster this respondent belongs to.
+            The second line is the CSV header (column names).
+            The third line is this respondent's answers, in CSV format.
             {segment}
             
             For this respondent, classify their sentiment and return a JSON object with this exact structure.
@@ -326,8 +332,8 @@ def analyze_sentiment(
             {{
               "results": [
                 {{
-                  "cluster": <cluster number as integer, use 0 if unknown>,
-                  "respondent_id": "<respondent number>",
+                  "cluster": <the cluster number shown at the top of the data, as an integer>,
+                  "respondent_id": "<copy the respondent ID exactly as it appears at the start of the CSV row — it looks like R001 or R042>",
                   "sentiment": "<positive | negative | neutral | mixed>",
                   "confidence": "<high | medium | low>",
                   "flag_urgent": <true | false>,
@@ -336,6 +342,10 @@ def analyze_sentiment(
                 }}
               ]
             }}
+            
+            CRITICAL — respondent_id rule: copy the ID exactly as it appears in the CSV row.
+            The ID starts with the letter R followed by digits, e.g. R001, R042, R123.
+            Do NOT use a bare number like 1 or 42. Do NOT invent a new ID.
             
             SENTIMENT DEFINITIONS:
             - positive: satisfaction, appreciation, or benefit from training
