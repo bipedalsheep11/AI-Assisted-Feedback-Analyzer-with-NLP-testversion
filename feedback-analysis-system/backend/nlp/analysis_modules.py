@@ -310,6 +310,7 @@ def analyze_sentiment(
         segments = []
         
 <<<<<<< HEAD
+<<<<<<< HEAD
         # The actual data rows start at index 3.
         # GUARD: a valid data row must start with a respondent number — either
         # a bare integer ("1", "42") or the R-prefixed zero-padded form ("R001").
@@ -327,6 +328,10 @@ def analyze_sentiment(
                 # Log it so the developer can see it, but do not create a segment.
                 print(f"  [sentiment] Skipping phantom line in cluster {cluster_id}: {repr(line[:80])}")
                 continue
+=======
+        # The actual data rows start at index 3
+        for line in lines[3:]:
+>>>>>>> parent of 15a46eb (fixed issue with the respondent table not populating)
 =======
         # The actual data rows start at index 3
         for line in lines[3:]:
